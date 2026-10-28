@@ -1,0 +1,31 @@
+services:
+  relay:
+    build: .
+    image: pojia-relay:latest
+    container_name: pojia-relay
+    ports:
+      - "${RELAY_BIND:-127.0.0.1}:${RELAY_PORT:-8000}:8000"
+    environment:
+      # 必填：会话签名密钥（任意长随机串）
+      SECRET_KEY: "${SECRET_KEY:?请设置 SECRET_KEY}"
+      # 可选：管理员密码哈希（scrypt 串）。不填则首次启动打印随机密码。
+      ADMIN_PASSWORD_HASH: "${ADMIN_PASSWORD_HASH:-}"
+      DB_PATH: /data/relay.db
+      PRESET_DIR: /data/presets
+      DATA_DIR: /data
+      REQUEST_TIMEOUT: "${REQUEST_TIMEOUT:-300}"
+      MAX_BODY_BYTES: "${MAX_BODY_BYTES:-4194304}"
+      LOG_RETENTION_DAYS: "${LOG_RETENTION_DAYS:-7}"
+    volumes:
+      - relay_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  relay_data:

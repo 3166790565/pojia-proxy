@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+data/
+data_test/
+.pytest_cache/
+.venv/
+venv/
+*.db
+*.db-wal
+*.db-shm
+.env
+
+# 参考项目（第三方仓库，不随本项目分发）
+参考项目/

@@ -1,0 +1,117 @@
+# 破甲路由中转站
+
+轻量级 LLM 中转路由：在转发请求前，把破甲提示词注入到请求的 system 提示词前面。
+Python + FastAPI 实现，Docker 部署。
+
+## 特性
+
+- **双协议**：OpenAI `/v1/chat/completions` + Anthropic `/v1/messages`，共用同一注入引擎。
+- **按模型 + 关键词选词**：先按 `model` 分类（claude / gpt / deepseek / gemini / glm / grok / other），
+  再按用户消息关键词归入类别（通用 / 逆向 / 创作 / 渗透），组合出对应破甲词。
+- **28 格全填充**：7 模型 × 4 类别，每格独立可编辑。缺现成素材时按已有破甲词架构自动派生。
+- **注入位置可调**：前置 `prepend` / 后置 `append` / 替换 `replace`，全局默认 + 单格覆盖。
+- **防重复注入**：双 needle 判重（头 80 + 尾 96 字符），重试/重放不会叠加。
+- **完整 WebUI**：单管理员登录；破甲词按 family 手风琴展示，点开才拉全文。
+- **key 透传**：中转不校验、不存储业务 key；`/v1/models` 同样透传上游。
+- **SSE 透传**：逐 chunk 原样转发，旁路只读统计 usage / 首 token / 终态。
+
+## 快速开始（Docker）
+
+```bash
+export SECRET_KEY=$(python -c "import secrets;print(secrets.token_urlsafe(48))")
+docker compose up -d --build
+```
+
+首次启动若未设置 `ADMIN_PASSWORD_HASH`，会打印一个随机管理员密码：
+
+```bash
+docker compose logs relay | grep -A1 初始管理员密码
+```
+
+浏览器打开 `http://127.0.0.1:8000/`，用该密码登录。
+
+### 生成密码哈希（推荐）
+
+```bash
+python -c "
+import sys; sys.path.insert(0,'.')
+from app.security import hash_password
+print(hash_password('你的密码'))
+"
+```
+
+把输出写入 `.env` 的 `ADMIN_PASSWORD_HASH`。
+
+## 配置
+
+| 环境变量 | 必填 | 默认 | 说明 |
+|---|---|---|---|
+| `SECRET_KEY` | 是 | — | 会话签名密钥 |
+| `ADMIN_PASSWORD_HASH` | 否 | 自动生成 | `scrypt$N$r$p$salt$hash` |
+| `DATA_DIR` | 否 | `./data` | 数据目录 |
+| `DB_PATH` | 否 | `$DATA_DIR/relay.db` | SQLite 路径 |
+| `PRESET_DIR` | 否 | `$DATA_DIR/presets` | 预设输出目录 |
+| `REQUEST_TIMEOUT` | 否 | `300` | 上游超时（秒） |
+| `MAX_BODY_BYTES` | 否 | `4194304` | 请求体上限 |
+| `LOG_RETENTION_DAYS` | 否 | `7` | 日志保留天数 |
+
+## 客户端使用
+
+把客户端 base URL 指向本服务，key 填上游真实 key（原样透传）：
+
+```bash
+# OpenAI 兼容
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H "Authorization: Bearer sk-your-upstream-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"你好"}]}'
+
+# Anthropic
+curl http://127.0.0.1:8000/v1/messages \
+  -H "x-api-key: sk-ant-your-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-sonnet-5","max_tokens":1024,"messages":[{"role":"user","content":"你好"}]}'
+```
+
+上游地址在 WebUI「设置」里配置。
+
+## WebUI
+
+- **设置**：上游地址、注入开关、注入位置、超时、日志保留、CORS。
+- **模型规则**：`family` + `pattern`（glob 或 `re:` 正则）+ 优先级。
+- **关键词**：`category` + 关键词（空格分隔，任一命中）。
+- **破甲词**：7×4 手风琴视图，点 family 展开；点编辑在右侧抽屉加载全文。
+- **请求日志**：分页 + 详情（usage / 错误）。
+
+## 开发
+
+```bash
+pip install -r requirements.txt
+DATA_DIR=./data python -m uvicorn app.main:app --reload --port 8000
+pytest -q
+```
+
+## 目录结构
+
+```
+app/
+  main.py         应用装配与生命周期
+  config.py       环境变量与常量
+  db.py           SQLite schema 与 CRUD
+  security.py     scrypt 密码 + 签名会话
+  selector.py     模型分类 + 关键词 + 预设选择
+  engine.py       三协议注入 + 判重 + ChatML 净化
+  proxy.py        URL/header/SSE/脱敏
+  proxy_api.py    /v1/* 代理路由
+  admin_api.py    /admin/* 管理接口
+  seed_builder.py 种子导入 + 缺料自动派生
+presets/seed/     种子破甲词（{family}__{category}.md）
+web/              单页前端
+tests/            pytest
+```
+
+## 边界说明
+
+- 不做协议互转：OpenAI 端点只转发 `/v1/chat/completions`，Anthropic 只转发 `/v1/messages`。
+- 破甲效果取决于上游模型与策略，本项目只负责注入与转发。
+- SQLite 单写者，Docker 使用单 worker。

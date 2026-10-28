@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>破甲路由中转站</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app" class="app">
+  <!-- 登录 -->
+  <div id="login-view" class="login-view hidden">
+    <div class="login-card">
+      <h1>破甲路由中转站</h1>
+      <p class="sub">管理员登录</p>
+      <input type="password" id="login-password" placeholder="管理员密码" autocomplete="current-password">
+      <button id="login-btn">登录</button>
+      <p id="login-msg" class="msg"></p>
+    </div>
+  </div>
+
+  <!-- 主界面 -->
+  <div id="main-view" class="main-view hidden">
+    <aside class="sidebar">
+      <div class="brand">破甲路由</div>
+      <nav>
+        <button data-view="settings" class="nav-item active">设置</button>
+        <button data-view="rules" class="nav-item">模型规则</button>
+        <button data-view="keywords" class="nav-item">关键词</button>
+        <button data-view="presets" class="nav-item">破甲词</button>
+        <button data-view="logs" class="nav-item">请求日志</button>
+      </nav>
+      <div class="sidebar-foot">
+        <span id="inject-badge" class="badge">?</span>
+        <button id="logout-btn" class="link-btn">退出</button>
+      </div>
+    </aside>
+
+    <main class="content">
+      <header class="topbar">
+        <h2 id="view-title">设置</h2>
+        <div class="topbar-actions" id="topbar-actions"></div>
+      </header>
+      <section id="view-body" class="view-body"></section>
+    </main>
+  </div>
+
+  <!-- 编辑抽屉 -->
+  <div id="drawer-mask" class="drawer-mask hidden"></div>
+  <aside id="drawer" class="drawer hidden">
+    <header class="drawer-head">
+      <h3 id="drawer-title">编辑</h3>
+      <button id="drawer-close" class="icon-btn">×</button>
+    </header>
+    <div id="drawer-body" class="drawer-body"></div>
+    <footer class="drawer-foot">
+      <button id="drawer-cancel" class="btn ghost">取消</button>
+      <button id="drawer-save" class="btn primary">保存</button>
+    </footer>
+  </aside>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
