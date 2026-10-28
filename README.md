@@ -19,7 +19,20 @@ Python + FastAPI 实现，Docker 部署。
 
 ```bash
 export SECRET_KEY=$(python -c "import secrets;print(secrets.token_urlsafe(48))")
-docker compose up -d --build
+docker compose up -d
+```
+
+> 若目录名含中文，Compose 无法推断项目名，请显式指定：
+> `docker compose -p pojia-proxy up -d`
+
+直接使用已发布镜像（无需构建）：
+
+```bash
+docker run -d --name pojia-relay \
+  -p 127.0.0.1:8000:8000 \
+  -e SECRET_KEY=$(python -c "import secrets;print(secrets.token_urlsafe(48))") \
+  -v relay_data:/data \
+  bxacc123/pojia-router:latest
 ```
 
 首次启动若未设置 `ADMIN_PASSWORD_HASH`，会打印一个随机管理员密码：
@@ -115,3 +128,16 @@ tests/            pytest
 - 不做协议互转：OpenAI 端点只转发 `/v1/chat/completions`，Anthropic 只转发 `/v1/messages`。
 - 破甲效果取决于上游模型与策略，本项目只负责注入与转发。
 - SQLite 单写者，Docker 使用单 worker。
+
+## 镜像
+
+- `bxacc123/pojia-router:latest`
+- `bxacc123/pojia-router:1.0.0`
+
+本地修改源码后重新发布：
+
+```bash
+docker build -t bxacc123/pojia-router:latest -t bxacc123/pojia-router:1.0.0 .
+docker push bxacc123/pojia-router:latest
+docker push bxacc123/pojia-router:1.0.0
+```
