@@ -21,8 +21,11 @@ Python + FastAPI 实现，Docker 部署。
 ## 快速开始（Docker）
 
 ```bash
-# 可选：用 .env 文件指定管理员密码，不填则首次启动打印随机密码
-echo "ADMIN_PASSWORD=你的密码" > .env
+# 1) 复制示例环境变量，改成你的密码
+cp .env.example .env
+#   编辑 .env：ADMIN_PASSWORD=你的密码（SECRET_KEY 留空自动生成）
+
+# 2) 启动
 docker compose up -d
 ```
 
