@@ -56,6 +56,26 @@ CREATE TABLE IF NOT EXISTS presets (
     UNIQUE (family, category)
 );
 
+-- 破甲词包：独立命名的破甲词（如 冷咖啡、小码酱、DevSec），与模型家族解耦
+CREATE TABLE IF NOT EXISTS prompt_packs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL
+);
+
+-- 模型 → 破甲词包绑定（可多条叠加）
+CREATE TABLE IF NOT EXISTS model_bindings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern TEXT NOT NULL,
+    pack_id INTEGER NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 100,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS request_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts INTEGER NOT NULL,
@@ -64,6 +84,8 @@ CREATE TABLE IF NOT EXISTS request_logs (
     family TEXT NOT NULL DEFAULT '',
     category TEXT NOT NULL DEFAULT '',
     preset_id INTEGER,
+    route_mode TEXT NOT NULL DEFAULT '',
+    packs TEXT NOT NULL DEFAULT '',
     position TEXT NOT NULL DEFAULT '',
     injected INTEGER NOT NULL DEFAULT 0,
     inject_len INTEGER NOT NULL DEFAULT 0,
@@ -110,13 +132,31 @@ def connect() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """为旧库补充新列（幂等）。"""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(request_logs)").fetchall()}
+    if "route_mode" not in cols:
+        conn.execute("ALTER TABLE request_logs ADD COLUMN route_mode TEXT NOT NULL DEFAULT ''")
+    if "packs" not in cols:
+        conn.execute("ALTER TABLE request_logs ADD COLUMN packs TEXT NOT NULL DEFAULT ''")
+    # settings 补默认键（route_mode）
+    ts = now()
+    for key, value in DEFAULT_SETTINGS.items():
+        conn.execute(
+            "INSERT INTO settings(key, value, updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(key) DO NOTHING",
+            (key, value, ts),
+        )
+
+
 def init_db() -> None:
-    """建表。并发安全：executescript 加锁重试。"""
+    """建表 + 迁移。并发安全：executescript 加锁重试。"""
     last: Exception | None = None
     for _ in range(5):
         try:
             with connect() as conn:
                 conn.executescript(SCHEMA)
+                _migrate(conn)
             return
         except sqlite3.OperationalError as exc:
             if "locked" not in str(exc).lower():
@@ -146,6 +186,8 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "log_retention_days": str(config.LOG_RETENTION_DAYS),
     "session_ttl": str(config.SESSION_TTL),
     "cors_allow": "",
+    # 路由模式：fine（精细路由，模型分类+关键词）/ pack（破甲词包，按模型绑定）
+    "route_mode": "fine",
 }
 
 
@@ -406,22 +448,127 @@ def copy_preset(src_id: int, scope: str, target: str) -> int:
         return count
 
 
+# ---------------- 破甲词包 ----------------
+
+def list_packs(include_content: bool = False) -> list[dict[str, Any]]:
+    cols = "*" if include_content else "id, name, description, enabled, updated_at, length(content) AS content_len"
+    with connect() as conn:
+        rows = conn.execute(f"SELECT {cols} FROM prompt_packs ORDER BY name ASC").fetchall()
+    return rows_to_dicts(rows)
+
+
+def get_pack(pack_id: int) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM prompt_packs WHERE id=?", (pack_id,)).fetchone()
+    return row_to_dict(row)
+
+
+def get_pack_by_name(name: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM prompt_packs WHERE name=?", (name,)).fetchone()
+    return row_to_dict(row)
+
+
+def create_pack(name: str, description: str = "", content: str = "", enabled: bool = True) -> int:
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO prompt_packs(name, description, content, enabled, updated_at) VALUES(?,?,?,?,?)",
+            (name, description, content, int(enabled), now()),
+        )
+        return int(cur.lastrowid)
+
+
+def update_pack(pack_id: int, fields: dict[str, Any]) -> bool:
+    allowed = {"name", "description", "content", "enabled"}
+    sets, vals = [], []
+    for key, value in fields.items():
+        if key not in allowed:
+            continue
+        sets.append(f"{key}=?")
+        vals.append(int(value) if key == "enabled" else value)
+    if not sets:
+        return False
+    sets.append("updated_at=?")
+    vals.append(now())
+    vals.append(pack_id)
+    with connect() as conn:
+        cur = conn.execute(f"UPDATE prompt_packs SET {', '.join(sets)} WHERE id=?", vals)
+        return cur.rowcount > 0
+
+
+def delete_pack(pack_id: int) -> bool:
+    with connect() as conn:
+        conn.execute("DELETE FROM model_bindings WHERE pack_id=?", (pack_id,))
+        cur = conn.execute("DELETE FROM prompt_packs WHERE id=?", (pack_id,))
+        return cur.rowcount > 0
+
+
+# ---------------- 模型绑定 ----------------
+
+def list_bindings() -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT b.*, p.name AS pack_name, p.enabled AS pack_enabled "
+            "FROM model_bindings b LEFT JOIN prompt_packs p ON p.id = b.pack_id "
+            "ORDER BY b.priority ASC, b.id ASC"
+        ).fetchall()
+    return rows_to_dicts(rows)
+
+
+def create_binding(pattern: str, pack_id: int, priority: int = 100, enabled: bool = True) -> int:
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO model_bindings(pattern, pack_id, priority, enabled, updated_at) VALUES(?,?,?,?,?)",
+            (pattern, pack_id, priority, int(enabled), now()),
+        )
+        return int(cur.lastrowid)
+
+
+def update_binding(binding_id: int, fields: dict[str, Any]) -> bool:
+    allowed = {"pattern", "pack_id", "priority", "enabled"}
+    sets, vals = [], []
+    for key, value in fields.items():
+        if key not in allowed:
+            continue
+        sets.append(f"{key}=?")
+        vals.append(int(value) if key in ("enabled", "pack_id") else value)
+    if not sets:
+        return False
+    sets.append("updated_at=?")
+    vals.append(now())
+    vals.append(binding_id)
+    with connect() as conn:
+        cur = conn.execute(f"UPDATE model_bindings SET {', '.join(sets)} WHERE id=?", vals)
+        return cur.rowcount > 0
+
+
+def delete_binding(binding_id: int) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM model_bindings WHERE id=?", (binding_id,))
+        return cur.rowcount > 0
+
+
 # ---------------- logs ----------------
 
 def insert_log(**fields: Any) -> int:
     cols = [
-        "ts", "protocol", "model", "family", "category", "preset_id", "position",
-        "injected", "inject_len", "status", "duration_ms", "first_token_ms",
-        "usage", "error", "client_ip", "request_path",
+        "ts", "protocol", "model", "family", "category", "preset_id", "route_mode",
+        "packs", "position", "injected", "inject_len", "status", "duration_ms",
+        "first_token_ms", "usage", "error", "client_ip", "request_path",
     ]
     data = {c: fields.get(c) for c in cols}
     data["ts"] = data["ts"] or now()
     data["usage"] = json.dumps(data["usage"], ensure_ascii=False) if isinstance(data["usage"], (dict, list)) else (data["usage"] or "")
     data["error"] = data["error"] or ""
     # NOT NULL TEXT 列补默认空串
-    for text_col in ("protocol", "model", "family", "category", "position", "client_ip", "request_path"):
+    for text_col in (
+        "protocol", "model", "family", "category", "route_mode", "packs",
+        "position", "client_ip", "request_path",
+    ):
         if data[text_col] is None:
             data[text_col] = ""
+    if isinstance(data.get("packs"), (list, tuple)):
+        data["packs"] = ",".join(str(x) for x in data["packs"])
     for int_col in ("injected", "inject_len", "status", "duration_ms"):
         if data[int_col] is None:
             data[int_col] = 0

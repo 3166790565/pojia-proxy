@@ -59,9 +59,11 @@ async function refreshBadge() {
 /* ---------------- 视图切换 ---------------- */
 const TITLES = {
   settings: "设置",
+  packs: "破甲词包",
+  bindings: "模型绑定",
+  presets: "精细破甲词（模型 × 类别）",
   rules: "模型分类规则",
   keywords: "关键词 → 类别",
-  presets: "破甲词矩阵",
   logs: "请求日志",
 };
 
@@ -74,6 +76,8 @@ async function switchView(view) {
   body.innerHTML = `<div class="loading">加载中…</div>`;
   try {
     if (view === "settings") await renderSettings(body);
+    else if (view === "packs") await renderPacks(body);
+    else if (view === "bindings") await renderBindings(body);
     else if (view === "rules") await renderRules(body);
     else if (view === "keywords") await renderKeywords(body);
     else if (view === "presets") await renderPresets(body);
@@ -91,6 +95,14 @@ async function renderSettings(body) {
     <div class="form-grid">
       <label>上游地址</label><input id="s-upstream" value="${esc(s.upstream_base)}" placeholder="https://api.openai.com">
       <label>注入总开关</label><select id="s-inject"><option value="1" ${s.inject_enabled==="1"?"selected":""}>开启</option><option value="0" ${s.inject_enabled==="0"?"selected":""}>关闭</option></select>
+      <label>路由模式</label>
+      <div>
+        <select id="s-routemode">
+          <option value="fine" ${s.route_mode==="fine"?"selected":""}>精细路由（模型分类 + 关键词）</option>
+          <option value="pack" ${s.route_mode==="pack"?"selected":""}>破甲词包（按模型绑定）</option>
+        </select>
+        <p class="hint">精细路由：按模型分类与消息关键词选 28 格预设。破甲词包：按模型绑定独立破甲词包（可叠加多个）。</p>
+      </div>
       <label>注入位置</label>
       <div>
         <select id="s-position">${POSITIONS.map(p=>`<option value="${p}" ${s.inject_position===p?"selected":""}>${POSITION_LABEL[p]}</option>`).join("")}</select>
@@ -108,6 +120,7 @@ async function renderSettings(body) {
       upstream_base: $("#s-upstream").value.trim(),
       inject_enabled: $("#s-inject").value,
       inject_position: $("#s-position").value,
+      route_mode: $("#s-routemode").value,
       request_timeout: parseFloat($("#s-timeout").value) || 300,
       max_body_bytes: (parseInt($("#s-maxbody").value)||4)*1048576,
       log_retention_days: parseInt($("#s-retention").value)||7,
@@ -235,6 +248,134 @@ function openKeywordDrawer(id) {
     else await api("/admin/keywords", { method: "POST", body: payload });
     closeDrawer();
     await renderKeywords($("#view-body"));
+  });
+}
+
+/* ---------------- 破甲词包（包路由） ---------------- */
+async function renderPacks(body) {
+  const packs = await api("/admin/packs");
+  body.innerHTML = `
+    <div class="filter-bar">
+      <button class="btn small" id="pk-add">新增破甲词包</button>
+    </div>
+    <table><thead><tr><th>名称</th><th>描述</th><th>字数</th><th>enabled</th><th>操作</th></tr></thead>
+    <tbody>${packs.map(p=>rowPack(p)).join("") || `<tr><td colspan="5" class="empty">暂无破甲词包</td></tr>`}</tbody></table>
+  `;
+  $("#pk-add").onclick = () => openPackDrawer(null);
+  $$("#view-body .edit").forEach(b => b.onclick = () => openPackDrawer(Number(b.dataset.id)));
+  $$("#view-body .del").forEach(b => b.onclick = async () => {
+    if (!confirm("删除该破甲词包？相关模型绑定也会删除。")) return;
+    await api(`/admin/packs/${b.dataset.id}`, { method: "DELETE" });
+    renderPacks(body);
+  });
+}
+
+function rowPack(p) {
+  return `<tr>
+    <td><strong>${esc(p.name)}</strong></td>
+    <td class="hint">${esc(p.description)}</td>
+    <td>${p.content_len}</td>
+    <td>${p.enabled ? '<span class="pill">启用</span>' : '<span class="pill disabled">禁用</span>'}</td>
+    <td class="row-actions">
+      <button class="btn small edit" data-id="${p.id}">编辑</button>
+      <button class="btn small danger del" data-id="${p.id}">删除</button>
+    </td></tr>`;
+}
+
+async function openPackDrawer(id) {
+  const packs = await api("/admin/packs");
+  const p = id ? await api(`/admin/packs/${id}`) : { name: "", description: "", content: "", enabled: 1 };
+  openDrawer(id ? `编辑破甲词包 · ${p.name}` : "新增破甲词包", `
+    <div class="form-grid">
+      <label>名称</label><input id="d-name" value="${esc(p.name)}" placeholder="如 冷咖啡">
+      <label>描述</label><input id="d-desc" value="${esc(p.description)}" placeholder="一句话说明">
+      <label>启用</label><select id="d-enabled"><option value="1" ${p.enabled?"selected":""}>启用</option><option value="0" ${!p.enabled?"selected":""}>禁用</option></select>
+    </div>
+    <div style="margin-top:14px">
+      <label class="hint">破甲词内容（${(p.content||"").length} 字）</label>
+      <textarea id="d-content" style="min-height:55vh" spellcheck="false">${esc(p.content)}</textarea>
+    </div>
+  `, async () => {
+    const payload = { name: $("#d-name").value.trim(), description: $("#d-desc").value.trim(), content: $("#d-content").value, enabled: $("#d-enabled").value === "1" };
+    if (id) await api(`/admin/packs/${id}`, { method: "PUT", body: payload });
+    else await api("/admin/packs", { method: "POST", body: payload });
+    closeDrawer();
+    renderPacks($("#view-body"));
+  });
+}
+
+/* ---------------- 模型绑定（包路由） ---------------- */
+async function renderBindings(body) {
+  const [bindings, packs] = await Promise.all([api("/admin/bindings"), api("/admin/packs")]);
+  const packOpts = packs.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  body.innerHTML = `
+    <div class="filter-bar"><span class="hint">按模型 pattern 绑定破甲词包，命中可叠加多个，priority 小的先注入。</span></div>
+    <table><thead><tr><th>模型 pattern</th><th>破甲词包</th><th>priority</th><th>enabled</th><th>操作</th></tr></thead>
+    <tbody>${bindings.map(b=>rowBinding(b)).join("") || `<tr><td colspan="5" class="empty">暂无绑定</td></tr>`}</tbody></table>
+    <div style="margin-top:14px" class="form-grid">
+      <label>新增绑定</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input id="b-pattern" placeholder="deepseek-* 或 re:^glm-" style="width:220px">
+        <select id="b-pack" style="min-width:160px">${packOpts}</select>
+        <input id="b-priority" type="number" value="100" style="width:90px">
+        <button class="btn primary" id="b-add">绑定</button>
+      </div>
+    </div>
+  `;
+  $("#b-add").onclick = async () => {
+    const pattern = $("#b-pattern").value.trim();
+    const pack_id = Number($("#b-pack").value);
+    if (!pattern || !pack_id) return;
+    await api("/admin/bindings", { method: "POST", body: { pattern, pack_id, priority: parseInt($("#b-priority").value)||100, enabled: true } });
+    renderBindings(body);
+  };
+  $$("#view-body .edit").forEach(x => x.onclick = () => openBindingDrawer(Number(x.dataset.id), packs));
+  $$("#view-body .del").forEach(x => x.onclick = async () => {
+    if (!confirm("删除该绑定？")) return;
+    await api(`/admin/bindings/${x.dataset.id}`, { method: "DELETE" });
+    renderBindings(body);
+  });
+}
+
+function rowBinding(b) {
+  return `<tr>
+    <td><code>${esc(b.pattern)}</code></td>
+    <td>${esc(b.pack_name || "(已删除包)")}</td>
+    <td>${b.priority}</td>
+    <td>${b.enabled ? '<span class="pill">启用</span>' : '<span class="pill disabled">禁用</span>'}</td>
+    <td class="row-actions">
+      <button class="btn small edit" data-id="${b.id}">编辑</button>
+      <button class="btn small danger del" data-id="${b.id}">删除</button>
+    </td></tr>`;
+}
+
+function openBindingDrawer(id, packs) {
+  const bindings = [];
+  $$("#view-body tr").forEach(tr => {
+    const b = tr.querySelector(".edit");
+    if (b && Number(b.dataset.id) === id) bindings.push({
+      id, pattern: tr.querySelector("code").textContent,
+      priority: tr.children[2].textContent,
+      enabled: tr.children[3].textContent.includes("启用") ? 1 : 0,
+      pack_name: tr.children[1].textContent.trim(),
+    });
+  });
+  const b = bindings[0] || { pattern: "", priority: 100, enabled: 1 };
+  const packOpts = packs.map(p => `<option value="${p.id}" ${p.name===b.pack_name?"selected":""}>${esc(p.name)}</option>`).join("");
+  openDrawer("编辑绑定", `
+    <div class="form-grid">
+      <label>模型 pattern</label><input id="d-pattern" value="${esc(b.pattern)}">
+      <label>破甲词包</label><select id="d-pack">${packOpts}</select>
+      <label>priority</label><input id="d-priority" type="number" value="${b.priority}">
+      <label>enabled</label><select id="d-enabled"><option value="1" ${b.enabled?"selected":""}>启用</option><option value="0" ${!b.enabled?"selected":""}>禁用</option></select>
+    </div>
+  `, async () => {
+    await api(`/admin/bindings/${id}`, { method: "PUT", body: {
+      pattern: $("#d-pattern").value.trim(), pack_id: Number($("#d-pack").value),
+      priority: parseInt($("#d-priority").value)||100, enabled: $("#d-enabled").value === "1",
+    }});
+    closeDrawer();
+    renderBindings($("#view-body"));
   });
 }
 
@@ -382,7 +523,7 @@ async function renderLogs(body) {
       <button class="btn small" id="log-refresh">刷新</button>
       <button class="btn small danger" id="log-clear">清空</button>
     </div>
-    <table><thead><tr><th>时间</th><th>协议</th><th>model</th><th>family/category</th><th>注入</th><th>状态</th><th>耗时ms</th><th>首token</th></tr></thead>
+    <table><thead><tr><th>时间</th><th>协议</th><th>model</th><th>路由/命中</th><th>注入</th><th>状态</th><th>耗时ms</th><th>首token</th></tr></thead>
     <tbody>${data.items.map(l => rowLog(l)).join("") || `<tr><td colspan="8" class="empty">暂无日志</td></tr>`}</tbody></table>
     <div class="pager">
       <button class="btn small" id="log-prev" ${page<=1?"disabled":""}>上一页</button>
@@ -399,11 +540,14 @@ async function renderLogs(body) {
 
 function rowLog(l, idx) {
   const inject = l.injected ? `<span class="pill">注入 ${l.inject_len}字</span>` : '<span class="pill disabled">未注入</span>';
+  let hit;
+  if (l.route_mode === "pack") hit = `<span class="pill pos">包</span> ${esc(l.packs || "-")}`;
+  else hit = `${esc(l.family || "-")}/${esc(l.category || "-")}`;
   return `<tr class="log-row" data-idx="${idx}">
     <td>${new Date(l.ts*1000).toLocaleString()}</td>
     <td>${esc(l.protocol)}</td>
     <td>${esc(l.model || "-")}</td>
-    <td>${esc(l.family)}/${esc(l.category)}</td>
+    <td>${hit}</td>
     <td>${inject}</td>
     <td>${l.status}</td>
     <td>${l.duration_ms}</td>
@@ -417,7 +561,9 @@ function showLogDetail(l) {
     <div class="form-grid">
       <label>协议</label><div>${esc(l.protocol)}</div>
       <label>model</label><div>${esc(l.model)}</div>
-      <label>family/category</label><div>${esc(l.family)} / ${esc(l.category)}</div>
+      <label>family/category</label><div>${esc(l.family || "-")} / ${esc(l.category || "-")}</div>
+      <label>路由模式</label><div>${l.route_mode === "pack" ? "破甲词包" : "精细路由"}</div>
+      <label>命中包</label><div>${esc(l.packs || "-")}</div>
       <label>位置</label><div>${esc(l.position)}</div>
       <label>状态</label><div>${l.status}</div>
       <label>路径</label><div>${esc(l.request_path)}</div>

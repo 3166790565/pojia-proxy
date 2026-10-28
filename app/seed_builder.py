@@ -209,10 +209,85 @@ def seed_presets() -> int:
     return created
 
 
+# 默认破甲词包：从参考素材提炼，独立命名
+DEFAULT_PACKS: dict[str, dict[str, str]] = {}
+
+
+def _load_pack_sources() -> None:
+    """从 presets/seed 读取默认包内容。"""
+    global DEFAULT_PACKS
+    seed = config.SEED_DIR
+    # 冷咖啡：以 claude 冷咖啡稿为基底
+    claude = _read(seed / "claude__通用.md") or ""
+    deepseek_gen = _read(seed / "deepseek__通用.md") or ""
+    DEFAULT_PACKS = {
+        "冷咖啡": {
+            "description": "冷咖啡破甲词：执行合同 + 路由账本 + 交付格式，面向 Claude 系",
+            "content": claude,
+        },
+        "小码酱": {
+            "description": "小码酱人格破甲词，来自 dsh-purge，面向 DeepSeek 系",
+            "content": deepseek_gen,
+        },
+        "DevSec": {
+            "description": "DevSec 安全工程破甲词：任务执行 + 证据链 + 诚实分层",
+            "content": _read(seed / "other__通用.md") or "",
+        },
+    }
+
+
+def seed_packs() -> int:
+    """导入默认破甲词包（已存在则跳过）。返回新建数。"""
+    from . import db
+
+    _load_pack_sources()
+    created = 0
+    for name, info in DEFAULT_PACKS.items():
+        if db.get_pack_by_name(name) is not None:
+            continue
+        try:
+            db.create_pack(name, info.get("description", ""), info.get("content", ""), True)
+            created += 1
+        except sqlite3.IntegrityError:
+            pass
+    return created
+
+
+def seed_default_bindings() -> int:
+    """默认绑定：deepseek-* → 小码酱；claude-* → 冷咖啡；gpt-* → DevSec。返回新建数。"""
+    from . import db
+
+    created = 0
+    defaults = [
+        ("deepseek-*", "小码酱", 10),
+        ("claude-*", "冷咖啡", 20),
+        ("gpt-*", "DevSec", 30),
+    ]
+    for pattern, pack_name, priority in defaults:
+        pack = db.get_pack_by_name(pack_name)
+        if pack is None:
+            continue
+        exists = any(
+            b.get("pattern") == pattern and b.get("pack_id") == pack["id"]
+            for b in db.list_bindings()
+        )
+        if exists:
+            continue
+        try:
+            db.create_binding(pattern, pack["id"], priority, True)
+            created += 1
+        except sqlite3.IntegrityError:
+            pass
+    return created
+
+
 def ensure_all() -> int:
-    """初始化入口：规则 + 关键词 + 28 格预设。返回写入格数。"""
+    """初始化入口：规则 + 关键词 + 28 格预设 + 破甲词包 + 默认绑定。返回写入数。"""
     from . import db
 
     db.init_db()
     seed_default_rules()
-    return seed_presets()
+    n = seed_presets()
+    seed_packs()
+    seed_default_bindings()
+    return n

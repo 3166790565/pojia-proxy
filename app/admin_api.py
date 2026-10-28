@@ -72,6 +72,7 @@ _SETTING_KEYS = {
     "log_retention_days",
     "session_ttl",
     "cors_allow",
+    "route_mode",
 }
 
 
@@ -92,6 +93,8 @@ async def put_settings(body: SettingsBody, _: None = Depends(require_admin)):
             continue
         if k == "inject_position" and v not in config.POSITIONS:
             raise HTTPException(400, "inject_position 非法")
+        if k == "route_mode" and v not in ("fine", "pack"):
+            raise HTTPException(400, "route_mode 非法（fine|pack）")
         if k == "upstream_base":
             v = str(v).strip()
             if v:
@@ -188,6 +191,96 @@ async def update_keyword(keyword_id: int, body: dict[str, Any], _: None = Depend
 async def delete_keyword(keyword_id: int, _: None = Depends(require_admin)):
     if not db.delete_keyword(keyword_id):
         raise HTTPException(404, "关键词不存在")
+    return {"ok": True}
+
+
+# ---------------- 破甲词包（包路由） ----------------
+
+class PackBody(BaseModel):
+    name: str = Field(min_length=1)
+    description: str = ""
+    content: str = ""
+    enabled: bool = True
+
+
+@router.get("/packs")
+async def list_packs(_: None = Depends(require_admin)):
+    """精简列表，不含全文。"""
+    return db.list_packs(include_content=False)
+
+
+@router.get("/packs/{pack_id}")
+async def get_pack(pack_id: int, _: None = Depends(require_admin)):
+    row = db.get_pack(pack_id)
+    if row is None:
+        raise HTTPException(404, "包不存在")
+    return row
+
+
+@router.post("/packs")
+async def create_pack(body: PackBody, _: None = Depends(require_admin)):
+    try:
+        pid = db.create_pack(body.name, body.description, body.content, body.enabled)
+    except Exception:
+        raise HTTPException(400, "包名已存在")
+    return {"id": pid}
+
+
+class PackUpdateBody(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    content: str | None = None
+    enabled: bool | None = None
+
+
+@router.put("/packs/{pack_id}")
+async def update_pack(pack_id: int, body: PackUpdateBody, _: None = Depends(require_admin)):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not db.update_pack(pack_id, fields):
+        raise HTTPException(404, "包不存在或无变更")
+    return {"ok": True}
+
+
+@router.delete("/packs/{pack_id}")
+async def delete_pack(pack_id: int, _: None = Depends(require_admin)):
+    if not db.delete_pack(pack_id):
+        raise HTTPException(404, "包不存在")
+    return {"ok": True}
+
+
+# ---------------- 模型绑定（包路由） ----------------
+
+class BindingBody(BaseModel):
+    pattern: str = Field(min_length=1)
+    pack_id: int
+    priority: int = 100
+    enabled: bool = True
+
+
+@router.get("/bindings")
+async def list_bindings(_: None = Depends(require_admin)):
+    return db.list_bindings()
+
+
+@router.post("/bindings")
+async def create_binding(body: BindingBody, _: None = Depends(require_admin)):
+    if db.get_pack(body.pack_id) is None:
+        raise HTTPException(400, "pack_id 不存在")
+    bid = db.create_binding(body.pattern, body.pack_id, body.priority, body.enabled)
+    return {"id": bid}
+
+
+@router.put("/bindings/{binding_id}")
+async def update_binding(binding_id: int, body: dict[str, Any], _: None = Depends(require_admin)):
+    if not db.update_binding(binding_id, body):
+        raise HTTPException(404, "绑定不存在或无变更")
+    return {"ok": True}
+
+
+@router.delete("/bindings/{binding_id}")
+async def delete_binding(binding_id: int, _: None = Depends(require_admin)):
+    if not db.delete_binding(binding_id):
+        raise HTTPException(404, "绑定不存在")
     return {"ok": True}
 
 

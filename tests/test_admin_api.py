@@ -125,3 +125,32 @@ def test_logs_pagination(admin):
 def test_clear_logs(admin):
     db.insert_log(protocol="openai", model="x", status=200)
     assert admin.delete("/admin/logs").json()["deleted"] >= 1
+
+
+def test_packs_crud(admin):
+    pid = admin.post("/admin/packs", json={"name": "测试包", "content": "内容内容", "enabled": True}).json()["id"]
+    assert any(p["id"] == pid for p in admin.get("/admin/packs").json())
+    assert admin.put(f"/admin/packs/{pid}", json={"content": "新内容"}).status_code == 200
+    assert admin.get(f"/admin/packs/{pid}").json()["content"] == "新内容"
+    assert admin.delete(f"/admin/packs/{pid}").status_code == 200
+
+
+def test_bindings_crud(admin):
+    pid = admin.post("/admin/packs", json={"name": "绑定包", "content": "x", "enabled": True}).json()["id"]
+    bid = admin.post("/admin/bindings", json={"pattern": "deepseek-*", "pack_id": pid, "priority": 5}).json()["id"]
+    rows = admin.get("/admin/bindings").json()
+    assert any(b["id"] == bid and b["pack_name"] == "绑定包" for b in rows)
+    assert admin.put(f"/admin/bindings/{bid}", json={"priority": 1}).status_code == 200
+    assert admin.delete(f"/admin/bindings/{bid}").status_code == 200
+    admin.delete(f"/admin/packs/{pid}")
+
+
+def test_route_mode_setting(admin):
+    r = admin.put("/admin/settings", json={"values": {"route_mode": "pack"}})
+    assert r.status_code == 200
+    assert admin.get("/admin/settings").json()["route_mode"] == "pack"
+    assert admin.put("/admin/settings", json={"values": {"route_mode": "bad"}}).status_code == 400
+
+
+def test_binding_bad_pack_rejected(admin):
+    assert admin.post("/admin/bindings", json={"pattern": "x-*", "pack_id": 99999}).status_code == 400

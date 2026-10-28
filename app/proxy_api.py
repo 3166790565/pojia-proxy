@@ -31,15 +31,16 @@ def _error(message: str, status: int, source: str = "local") -> JSONResponse:
 def _load_context() -> dict[str, Any]:
     """每次请求现取配置（热更新友好）。"""
     settings = db.get_settings()
-    presets_rows = []
     with db.connect() as conn:
-        rows = conn.execute("SELECT * FROM presets").fetchall()
-        presets_rows = db.rows_to_dicts(rows)
+        presets_rows = db.rows_to_dicts(conn.execute("SELECT * FROM presets").fetchall())
+        packs_rows = db.rows_to_dicts(conn.execute("SELECT * FROM prompt_packs").fetchall())
     return {
         "settings": settings,
         "model_rules": db.list_model_rules(),
         "keywords": db.list_keywords(),
         "presets": selector.index_presets(presets_rows),
+        "bindings": db.list_bindings(),
+        "packs": {p["id"]: p for p in packs_rows},
     }
 
 
@@ -69,6 +70,7 @@ def _prepare(
     settings = ctx["settings"]
     inject_enabled = settings.get("inject_enabled", "1") == "1"
     default_position = settings.get("inject_position", config.DEFAULT_POSITION)
+    route_mode = settings.get("route_mode", "fine")
     model = str(body.get("model") or "")
     user_text = engine.extract_user_text(body, protocol)
     decision = selector.resolve(
@@ -79,6 +81,9 @@ def _prepare(
         presets=ctx["presets"],
         inject_enabled=inject_enabled,
         default_position=default_position,
+        route_mode=route_mode,
+        bindings=ctx["bindings"],
+        packs=ctx["packs"],
     )
     content = decision["content"]
     position = decision["position"]
@@ -88,8 +93,10 @@ def _prepare(
         "body": injected,
         "original": original,
         "model": model,
+        "route_mode": route_mode,
         "family": decision["family"],
         "category": decision["category"],
+        "pack_names": decision.get("pack_names", []),
         "preset_id": decision["preset"]["id"] if decision["preset"] else None,
         "position": position,
         "injected": bool(content),
@@ -218,6 +225,8 @@ def _log(
             family=meta.get("family", ""),
             category=meta.get("category", ""),
             preset_id=meta.get("preset_id"),
+            route_mode=meta.get("route_mode", ""),
+            packs=meta.get("pack_names", []),
             position=meta.get("position", ""),
             injected=1 if meta.get("injected") else 0,
             inject_len=meta.get("inject_len", 0),
