@@ -16,7 +16,8 @@ WEB_DIR = Path(os.environ.get("WEB_DIR", str(Path(__file__).resolve().parent.par
 SECRET_KEY = os.environ.get("SECRET_KEY", "").strip()
 SECRET_KEY_FILE = DATA_DIR / ".secret_key"
 
-# 管理密码哈希：scrypt$N$r$p$salt$hash
+# 管理密码：明文（推荐）或哈希串（scrypt$N$r$p$salt$hash，兼容旧配置）
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "").strip()
 ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", "").strip()
 
 MAX_BODY_BYTES = int(os.environ.get("MAX_BODY_BYTES", str(4 * 1024 * 1024)))

@@ -21,7 +21,8 @@ Python + FastAPI 实现，Docker 部署。
 ## 快速开始（Docker）
 
 ```bash
-export SECRET_KEY=$(python -c "import secrets;print(secrets.token_urlsafe(48))")
+# 可选：用 .env 文件指定管理员密码，不填则首次启动打印随机密码
+echo "ADMIN_PASSWORD=你的密码" > .env
 docker compose up -d
 ```
 
@@ -33,37 +34,27 @@ docker compose up -d
 ```bash
 docker run -d --name pojia-relay \
   -p 127.0.0.1:8000:8000 \
-  -e SECRET_KEY=$(python -c "import secrets;print(secrets.token_urlsafe(48))") \
+  -e ADMIN_PASSWORD=你的密码 \
   -v relay_data:/data \
   bxacc123/pojia-router:latest
 ```
 
-首次启动若未设置 `ADMIN_PASSWORD_HASH`，会打印一个随机管理员密码：
+首次启动若未设置 `ADMIN_PASSWORD`，会打印一个随机管理员密码：
 
 ```bash
-docker compose logs relay | grep -A1 初始管理员密码
+docker compose logs relay | grep -A1 初始密码
 ```
 
 浏览器打开 `http://127.0.0.1:8000/`，用该密码登录。
-
-### 生成密码哈希（推荐）
-
-```bash
-python -c "
-import sys; sys.path.insert(0,'.')
-from app.security import hash_password
-print(hash_password('你的密码'))
-"
-```
-
-把输出写入 `.env` 的 `ADMIN_PASSWORD_HASH`。
+`SECRET_KEY` 留空时自动生成并持久化到 `/data/.secret_key`（重启后会话仍有效）。
 
 ## 配置
 
 | 环境变量 | 必填 | 默认 | 说明 |
 |---|---|---|---|
-| `SECRET_KEY` | 是 | — | 会话签名密钥 |
-| `ADMIN_PASSWORD_HASH` | 否 | 自动生成 | `scrypt$N$r$p$salt$hash` |
+| `SECRET_KEY` | 否 | 自动生成 | 会话签名密钥；留空则生成并持久化到 `/data/.secret_key` |
+| `ADMIN_PASSWORD` | 否 | 自动生成 | 管理员登录密码（明文） |
+| `ADMIN_PASSWORD_HASH` | 否 | — | 兼容旧配置：scrypt 哈希串，优先级低于 `ADMIN_PASSWORD` |
 | `DATA_DIR` | 否 | `./data` | 数据目录 |
 | `DB_PATH` | 否 | `$DATA_DIR/relay.db` | SQLite 路径 |
 | `PRESET_DIR` | 否 | `$DATA_DIR/presets` | 预设输出目录 |

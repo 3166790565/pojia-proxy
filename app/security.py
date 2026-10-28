@@ -66,19 +66,25 @@ def read_session(token: str, max_age: int) -> dict[str, Any] | None:
 
 
 def check_admin_password(password: str) -> bool:
-    """校验登录密码。优先用 DB 中的哈希，其次用环境变量。"""
+    """校验登录密码。优先用 DB 中的哈希，其次用环境变量（明文或哈希）。"""
     record = db.get_admin()
-    stored = record["password_hash"] if record else config.ADMIN_PASSWORD_HASH
-    if not stored:
-        return False
-    return verify_password(password, stored)
+    if record:
+        return verify_password(password, record["password_hash"])
+    if config.ADMIN_PASSWORD_HASH:
+        return verify_password(password, config.ADMIN_PASSWORD_HASH)
+    if config.ADMIN_PASSWORD:
+        return hmac.compare_digest(password, config.ADMIN_PASSWORD)
+    return False
 
 
 def ensure_admin_configured() -> None:
-    """首次启动时把环境变量哈希写入 DB；都没有则生成随机密码并打印一次。
+    """首次启动时把密码（明文或哈希）写入 DB；都没有则生成随机密码并打印一次。
 
     并发安全：多 worker 同时启动时，只有真正插入成功的一方打印密码。
     """
+    if config.ADMIN_PASSWORD:
+        inserted = db.set_admin_hash(hash_password(config.ADMIN_PASSWORD), only_if_missing=True)
+        return
     if config.ADMIN_PASSWORD_HASH:
         inserted = db.set_admin_hash(config.ADMIN_PASSWORD_HASH, only_if_missing=True)
         return
@@ -86,7 +92,7 @@ def ensure_admin_configured() -> None:
     inserted = db.set_admin_hash(hash_password(password), only_if_missing=True)
     if inserted:
         print("=" * 60, flush=True)
-        print("[破甲路由] 未配置 ADMIN_PASSWORD_HASH，已生成初始管理员密码：", flush=True)
+        print("[破甲路由] 未配置管理员密码，已生成初始密码：", flush=True)
         print(f"    {password}", flush=True)
-        print("请立即登录 WebUI 修改，或设置环境变量 ADMIN_PASSWORD_HASH。", flush=True)
+        print("请立即登录 WebUI 修改，或设置环境变量 ADMIN_PASSWORD。", flush=True)
         print("=" * 60, flush=True)
