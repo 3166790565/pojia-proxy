@@ -137,6 +137,90 @@ def resolve(
     }
 
 
+def match_key_route(client_key: str, routes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """按下游 key 匹配上游路由。
+
+    key_match 支持三种写法：
+      - 精确：完整 key 相等
+      - 前缀：以 * 结尾，如 sk-orb-*
+      - 正则：re: 前缀
+    按 priority ASC, id ASC 取第一条命中。
+    """
+    if not client_key:
+        return None
+    ordered = sorted(
+        routes, key=lambda r: (int(r.get("priority", 100)), int(r.get("id", 0)))
+    )
+    for r in ordered:
+        if not r.get("enabled"):
+            continue
+        pattern = (r.get("key_match") or "").strip()
+        if not pattern:
+            continue
+        if pattern.startswith("re:"):
+            try:
+                if re.search(pattern[3:], client_key):
+                    return r
+            except re.error:
+                continue
+        elif pattern.endswith("*"):
+            if client_key.startswith(pattern[:-1]):
+                return r
+        elif client_key == pattern:
+            return r
+    return None
+
+
+def resolve_upstream(
+    mode: str,
+    body: dict[str, Any] | None,
+    client_key: str,
+    settings: dict[str, str],
+    upstreams: list[dict[str, Any]],
+    key_routes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """决定本次请求走哪个上游。
+
+    返回 {name, base_url, source, param_value}。
+    source ∈ single / body_param / key / fallback
+    """
+    by_name = {u["name"]: u for u in upstreams if u.get("enabled")}
+    fallback_base = (settings.get("upstream_base") or "").strip()
+
+    def _result(name: str, base_url: str, source: str, param_value: str = "") -> dict[str, Any]:
+        return {"name": name, "base_url": base_url, "source": source, "param_value": param_value}
+
+    if mode == "body_param":
+        param = (settings.get("upstream_param") or "shangyou").strip() or "shangyou"
+        value = ""
+        if isinstance(body, dict):
+            value = str(body.get(param) or "").strip()
+        if value:
+            hit = by_name.get(value)
+            if hit:
+                return _result(hit["name"], hit["base_url"], "body_param", value)
+            # 参数给了但没匹配上 → 回退，并记录参数值便于排查
+            return _result("", fallback_base, "fallback", value)
+
+    elif mode == "key":
+        hit = match_key_route(client_key, key_routes)
+        if hit:
+            up = next((u for u in upstreams if u["id"] == hit["upstream_id"]), None)
+            if up and up.get("enabled"):
+                return _result(up["name"], up["base_url"], "key")
+
+    return _result("", fallback_base, "single")
+
+
+def strip_upstream_param(body: dict[str, Any], settings: dict[str, str]) -> dict[str, Any]:
+    """从请求体中移除上游选择参数，避免透传给上游。"""
+    param = (settings.get("upstream_param") or "shangyou").strip() or "shangyou"
+    if isinstance(body, dict) and param in body:
+        body = dict(body)
+        body.pop(param, None)
+    return body
+
+
 def match_bindings(model: str, bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """返回该模型命中的所有绑定，按 priority ASC, id ASC 排序。"""
     if not model:

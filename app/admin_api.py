@@ -73,6 +73,8 @@ _SETTING_KEYS = {
     "session_ttl",
     "cors_allow",
     "route_mode",
+    "upstream_mode",
+    "upstream_param",
 }
 
 
@@ -95,6 +97,10 @@ async def put_settings(body: SettingsBody, _: None = Depends(require_admin)):
             raise HTTPException(400, "inject_position 非法")
         if k == "route_mode" and v not in ("fine", "pack"):
             raise HTTPException(400, "route_mode 非法（fine|pack）")
+        if k == "upstream_mode" and v not in ("single", "body_param", "key"):
+            raise HTTPException(400, "upstream_mode 非法（single|body_param|key）")
+        if k == "upstream_param":
+            v = str(v).strip() or "shangyou"
         if k == "upstream_base":
             v = str(v).strip()
             if v:
@@ -281,6 +287,103 @@ async def update_binding(binding_id: int, body: dict[str, Any], _: None = Depend
 async def delete_binding(binding_id: int, _: None = Depends(require_admin)):
     if not db.delete_binding(binding_id):
         raise HTTPException(404, "绑定不存在")
+    return {"ok": True}
+
+
+# ---------------- 多上游 ----------------
+
+class UpstreamBody(BaseModel):
+    name: str = Field(min_length=1)
+    base_url: str = Field(min_length=1)
+    description: str = ""
+    enabled: bool = True
+    priority: int = 100
+
+
+def _validate_upstream_url(value: str) -> str:
+    value = (value or "").strip()
+    try:
+        from .proxy import upstream_url
+
+        upstream_url(value, "models")
+    except ValueError as exc:
+        raise HTTPException(400, f"base_url 非法: {exc}")
+    return value
+
+
+@router.get("/upstreams")
+async def list_upstreams(_: None = Depends(require_admin)):
+    return db.list_upstreams()
+
+
+@router.post("/upstreams")
+async def create_upstream(body: UpstreamBody, _: None = Depends(require_admin)):
+    url = _validate_upstream_url(body.base_url)
+    try:
+        uid = db.create_upstream(body.name, url, body.description, body.enabled, body.priority)
+    except Exception:
+        raise HTTPException(400, "上游名称已存在")
+    return {"id": uid}
+
+
+class UpstreamUpdateBody(BaseModel):
+    name: str | None = None
+    base_url: str | None = None
+    description: str | None = None
+    enabled: bool | None = None
+    priority: int | None = None
+
+
+@router.put("/upstreams/{upstream_id}")
+async def update_upstream(upstream_id: int, body: UpstreamUpdateBody, _: None = Depends(require_admin)):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "base_url" in fields:
+        fields["base_url"] = _validate_upstream_url(fields["base_url"])
+    if not db.update_upstream(upstream_id, fields):
+        raise HTTPException(404, "上游不存在或无变更")
+    return {"ok": True}
+
+
+@router.delete("/upstreams/{upstream_id}")
+async def delete_upstream(upstream_id: int, _: None = Depends(require_admin)):
+    if not db.delete_upstream(upstream_id):
+        raise HTTPException(404, "上游不存在")
+    return {"ok": True}
+
+
+# ---------------- 按密钥路由 ----------------
+
+class KeyRouteBody(BaseModel):
+    key_match: str = Field(min_length=1)
+    upstream_id: int
+    priority: int = 100
+    enabled: bool = True
+
+
+@router.get("/key_routes")
+async def list_key_routes(_: None = Depends(require_admin)):
+    return db.list_key_routes()
+
+
+@router.post("/key_routes")
+async def create_key_route(body: KeyRouteBody, _: None = Depends(require_admin)):
+    if db.get_upstream(body.upstream_id) is None:
+        raise HTTPException(400, "upstream_id 不存在")
+    rid = db.create_key_route(body.key_match, body.upstream_id, body.priority, body.enabled)
+    return {"id": rid}
+
+
+@router.put("/key_routes/{route_id}")
+async def update_key_route(route_id: int, body: dict[str, Any], _: None = Depends(require_admin)):
+    if not db.update_key_route(route_id, body):
+        raise HTTPException(404, "密钥路由不存在或无变更")
+    return {"ok": True}
+
+
+@router.delete("/key_routes/{route_id}")
+async def delete_key_route(route_id: int, _: None = Depends(require_admin)):
+    if not db.delete_key_route(route_id):
+        raise HTTPException(404, "密钥路由不存在")
     return {"ok": True}
 
 

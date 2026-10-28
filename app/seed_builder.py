@@ -281,6 +281,22 @@ def seed_default_bindings() -> int:
     return created
 
 
+def seed_default_upstream() -> int:
+    """若没有任何上游，用 settings.upstream_base 建一条名为 default 的上游。"""
+    from . import db
+
+    if db.list_upstreams():
+        return 0
+    base = (db.get_setting("upstream_base") or "").strip()
+    if not base:
+        return 0
+    try:
+        db.create_upstream("default", base, "默认上游（来自 upstream_base）", True, 100)
+        return 1
+    except sqlite3.IntegrityError:
+        return 0
+
+
 def ensure_all() -> int:
     """初始化入口：规则 + 关键词 + 28 格预设 + 破甲词包 + 默认绑定。返回写入数。"""
     from . import db
@@ -290,4 +306,5 @@ def ensure_all() -> int:
     n = seed_presets()
     seed_packs()
     seed_default_bindings()
+    seed_default_upstream()
     return n

@@ -66,6 +66,27 @@ CREATE TABLE IF NOT EXISTS prompt_packs (
     updated_at INTEGER NOT NULL
 );
 
+-- 多上游：按名称选择目标上游
+CREATE TABLE IF NOT EXISTS upstreams (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    base_url TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    priority INTEGER NOT NULL DEFAULT 100,
+    updated_at INTEGER NOT NULL
+);
+
+-- 按密钥路由：下游 key（或其前缀）→ 上游
+CREATE TABLE IF NOT EXISTS key_routes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_match TEXT NOT NULL,
+    upstream_id INTEGER NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 100,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL
+);
+
 -- 模型 → 破甲词包绑定（可多条叠加）
 CREATE TABLE IF NOT EXISTS model_bindings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,6 +107,8 @@ CREATE TABLE IF NOT EXISTS request_logs (
     preset_id INTEGER,
     route_mode TEXT NOT NULL DEFAULT '',
     packs TEXT NOT NULL DEFAULT '',
+    upstream TEXT NOT NULL DEFAULT '',
+    upstream_source TEXT NOT NULL DEFAULT '',
     position TEXT NOT NULL DEFAULT '',
     injected INTEGER NOT NULL DEFAULT 0,
     inject_len INTEGER NOT NULL DEFAULT 0,
@@ -139,6 +162,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE request_logs ADD COLUMN route_mode TEXT NOT NULL DEFAULT ''")
     if "packs" not in cols:
         conn.execute("ALTER TABLE request_logs ADD COLUMN packs TEXT NOT NULL DEFAULT ''")
+    if "upstream" not in cols:
+        conn.execute("ALTER TABLE request_logs ADD COLUMN upstream TEXT NOT NULL DEFAULT ''")
+    if "upstream_source" not in cols:
+        conn.execute("ALTER TABLE request_logs ADD COLUMN upstream_source TEXT NOT NULL DEFAULT ''")
     # settings 补默认键（route_mode）
     ts = now()
     for key, value in DEFAULT_SETTINGS.items():
@@ -188,6 +215,10 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "cors_allow": "",
     # 路由模式：fine（精细路由，模型分类+关键词）/ pack（破甲词包，按模型绑定）
     "route_mode": "fine",
+    # 上游选择：single（固定 upstream_base）/ body_param（请求体参数）/ key（按下游 key）
+    "upstream_mode": "single",
+    # body_param 模式下的请求体参数名
+    "upstream_param": "shangyou",
 }
 
 
@@ -548,13 +579,113 @@ def delete_binding(binding_id: int) -> bool:
         return cur.rowcount > 0
 
 
+# ---------------- 多上游 ----------------
+
+def list_upstreams() -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM upstreams ORDER BY priority ASC, id ASC").fetchall()
+    return rows_to_dicts(rows)
+
+
+def get_upstream(upstream_id: int) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM upstreams WHERE id=?", (upstream_id,)).fetchone()
+    return row_to_dict(row)
+
+
+def get_upstream_by_name(name: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM upstreams WHERE name=?", (name,)).fetchone()
+    return row_to_dict(row)
+
+
+def create_upstream(name: str, base_url: str, description: str = "", enabled: bool = True, priority: int = 100) -> int:
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO upstreams(name, base_url, description, enabled, priority, updated_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (name, base_url, description, int(enabled), priority, now()),
+        )
+        return int(cur.lastrowid)
+
+
+def update_upstream(upstream_id: int, fields: dict[str, Any]) -> bool:
+    allowed = {"name", "base_url", "description", "enabled", "priority"}
+    sets, vals = [], []
+    for key, value in fields.items():
+        if key not in allowed:
+            continue
+        sets.append(f"{key}=?")
+        vals.append(int(value) if key == "enabled" else value)
+    if not sets:
+        return False
+    sets.append("updated_at=?")
+    vals.append(now())
+    vals.append(upstream_id)
+    with connect() as conn:
+        cur = conn.execute(f"UPDATE upstreams SET {', '.join(sets)} WHERE id=?", vals)
+        return cur.rowcount > 0
+
+
+def delete_upstream(upstream_id: int) -> bool:
+    with connect() as conn:
+        conn.execute("DELETE FROM key_routes WHERE upstream_id=?", (upstream_id,))
+        cur = conn.execute("DELETE FROM upstreams WHERE id=?", (upstream_id,))
+        return cur.rowcount > 0
+
+
+# ---------------- 按密钥路由 ----------------
+
+def list_key_routes() -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT k.*, u.name AS upstream_name FROM key_routes k "
+            "LEFT JOIN upstreams u ON u.id = k.upstream_id "
+            "ORDER BY k.priority ASC, k.id ASC"
+        ).fetchall()
+    return rows_to_dicts(rows)
+
+
+def create_key_route(key_match: str, upstream_id: int, priority: int = 100, enabled: bool = True) -> int:
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO key_routes(key_match, upstream_id, priority, enabled, updated_at) VALUES(?,?,?,?,?)",
+            (key_match, upstream_id, priority, int(enabled), now()),
+        )
+        return int(cur.lastrowid)
+
+
+def update_key_route(route_id: int, fields: dict[str, Any]) -> bool:
+    allowed = {"key_match", "upstream_id", "priority", "enabled"}
+    sets, vals = [], []
+    for key, value in fields.items():
+        if key not in allowed:
+            continue
+        sets.append(f"{key}=?")
+        vals.append(int(value) if key in ("enabled", "upstream_id") else value)
+    if not sets:
+        return False
+    sets.append("updated_at=?")
+    vals.append(now())
+    vals.append(route_id)
+    with connect() as conn:
+        cur = conn.execute(f"UPDATE key_routes SET {', '.join(sets)} WHERE id=?", vals)
+        return cur.rowcount > 0
+
+
+def delete_key_route(route_id: int) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM key_routes WHERE id=?", (route_id,))
+        return cur.rowcount > 0
+
+
 # ---------------- logs ----------------
 
 def insert_log(**fields: Any) -> int:
     cols = [
         "ts", "protocol", "model", "family", "category", "preset_id", "route_mode",
-        "packs", "position", "injected", "inject_len", "status", "duration_ms",
-        "first_token_ms", "usage", "error", "client_ip", "request_path",
+        "packs", "upstream", "upstream_source", "position", "injected", "inject_len",
+        "status", "duration_ms", "first_token_ms", "usage", "error", "client_ip", "request_path",
     ]
     data = {c: fields.get(c) for c in cols}
     data["ts"] = data["ts"] or now()
@@ -563,7 +694,7 @@ def insert_log(**fields: Any) -> int:
     # NOT NULL TEXT 列补默认空串
     for text_col in (
         "protocol", "model", "family", "category", "route_mode", "packs",
-        "position", "client_ip", "request_path",
+        "upstream", "upstream_source", "position", "client_ip", "request_path",
     ):
         if data[text_col] is None:
             data[text_col] = ""

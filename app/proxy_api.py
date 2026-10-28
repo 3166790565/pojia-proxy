@@ -41,6 +41,8 @@ def _load_context() -> dict[str, Any]:
         "presets": selector.index_presets(presets_rows),
         "bindings": db.list_bindings(),
         "packs": {p["id"]: p for p in packs_rows},
+        "upstreams": db.list_upstreams(),
+        "key_routes": db.list_key_routes(),
     }
 
 
@@ -113,7 +115,7 @@ async def _forward(
     started = time.time()
     ctx = _load_context()
     settings = ctx["settings"]
-    upstream_base = settings.get("upstream_base", "")
+    client_key = _client_key(request, protocol)
 
     body: dict[str, Any] | None = None
     meta: dict[str, Any] = {
@@ -124,6 +126,8 @@ async def _forward(
         "position": "",
         "injected": False,
         "inject_len": 0,
+        "upstream": "",
+        "upstream_source": "",
     }
 
     if method == "POST":
@@ -131,9 +135,33 @@ async def _forward(
         if err is not None:
             return err
         assert body is not None
+        # 先按原始请求体决定上游（含 upstream 选择参数），再剥离该参数
+        up = selector.resolve_upstream(
+            settings.get("upstream_mode", "single"),
+            body,
+            client_key,
+            settings,
+            ctx["upstreams"],
+            ctx["key_routes"],
+        )
+        body = selector.strip_upstream_param(body, settings)
         meta = _prepare(body, protocol, ctx)
+        meta["upstream"] = up["name"]
+        meta["upstream_source"] = up["source"]
         payload = meta["body"]
+        upstream_base = up["base_url"]
     else:
+        up = selector.resolve_upstream(
+            settings.get("upstream_mode", "single"),
+            None,
+            client_key,
+            settings,
+            ctx["upstreams"],
+            ctx["key_routes"],
+        )
+        meta["upstream"] = up["name"]
+        meta["upstream_source"] = up["source"]
+        upstream_base = up["base_url"]
         payload = None
 
     try:
@@ -142,7 +170,6 @@ async def _forward(
         return _error(str(exc), 500)
 
     headers = proxy.build_request_headers(dict(request.headers), protocol)
-    client_key = _client_key(request, protocol)
     secret_filter = proxy.SecretFilter(client_key)
     observer = proxy.SSEObserver()
     observer.start(started)
@@ -227,6 +254,8 @@ def _log(
             preset_id=meta.get("preset_id"),
             route_mode=meta.get("route_mode", ""),
             packs=meta.get("pack_names", []),
+            upstream=meta.get("upstream", ""),
+            upstream_source=meta.get("upstream_source", ""),
             position=meta.get("position", ""),
             injected=1 if meta.get("injected") else 0,
             inject_len=meta.get("inject_len", 0),

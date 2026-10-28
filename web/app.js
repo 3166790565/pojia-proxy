@@ -59,6 +59,8 @@ async function refreshBadge() {
 /* ---------------- 视图切换 ---------------- */
 const TITLES = {
   settings: "设置",
+  upstreams: "多上游",
+  keyroutes: "密钥路由",
   packs: "破甲词包",
   bindings: "模型绑定",
   presets: "精细破甲词（模型 × 类别）",
@@ -76,6 +78,8 @@ async function switchView(view) {
   body.innerHTML = `<div class="loading">加载中…</div>`;
   try {
     if (view === "settings") await renderSettings(body);
+    else if (view === "upstreams") await renderUpstreams(body);
+    else if (view === "keyroutes") await renderKeyRoutes(body);
     else if (view === "packs") await renderPacks(body);
     else if (view === "bindings") await renderBindings(body);
     else if (view === "rules") await renderRules(body);
@@ -94,6 +98,17 @@ async function renderSettings(body) {
     <div class="status-line" id="status-line"></div>
     <div class="form-grid">
       <label>上游地址</label><input id="s-upstream" value="${esc(s.upstream_base)}" placeholder="https://api.openai.com">
+      <label>上游选择模式</label>
+      <div>
+        <select id="s-upmode">
+          <option value="single" ${s.upstream_mode==="single"?"selected":""}>固定（用上面的上游地址）</option>
+          <option value="body_param" ${s.upstream_mode==="body_param"?"selected":""}>按请求体参数</option>
+          <option value="key" ${s.upstream_mode==="key"?"selected":""}>按下游密钥</option>
+        </select>
+        <p class="hint">按请求体参数：读取参数值匹配「多上游」中的名称；按密钥：匹配「密钥路由」规则。</p>
+      </div>
+      <label>上游参数名</label><input id="s-upparam" value="${esc(s.upstream_param)}" placeholder="shangyou">
+      <p class="hint">仅「按请求体参数」模式生效；该参数会在转发前自动从请求体移除。</p>
       <label>注入总开关</label><select id="s-inject"><option value="1" ${s.inject_enabled==="1"?"selected":""}>开启</option><option value="0" ${s.inject_enabled==="0"?"selected":""}>关闭</option></select>
       <label>路由模式</label>
       <div>
@@ -121,6 +136,8 @@ async function renderSettings(body) {
       inject_enabled: $("#s-inject").value,
       inject_position: $("#s-position").value,
       route_mode: $("#s-routemode").value,
+      upstream_mode: $("#s-upmode").value,
+      upstream_param: $("#s-upparam").value.trim() || "shangyou",
       request_timeout: parseFloat($("#s-timeout").value) || 300,
       max_body_bytes: (parseInt($("#s-maxbody").value)||4)*1048576,
       log_retention_days: parseInt($("#s-retention").value)||7,
@@ -248,6 +265,130 @@ function openKeywordDrawer(id) {
     else await api("/admin/keywords", { method: "POST", body: payload });
     closeDrawer();
     await renderKeywords($("#view-body"));
+  });
+}
+
+/* ---------------- 多上游 ---------------- */
+async function renderUpstreams(body) {
+  const upstreams = await api("/admin/upstreams");
+  body.innerHTML = `
+    <div class="filter-bar"><button class="btn small" id="up-add">新增上游</button></div>
+    <table><thead><tr><th>名称</th><th>base_url</th><th>priority</th><th>enabled</th><th>操作</th></tr></thead>
+    <tbody>${upstreams.map(u=>rowUpstream(u)).join("") || `<tr><td colspan="5" class="empty">暂无上游（body_param/key 模式下按名称匹配）</td></tr>`}</tbody></table>
+  `;
+  $("#up-add").onclick = () => openUpstreamDrawer(null);
+  $$("#view-body .edit").forEach(b => b.onclick = () => openUpstreamDrawer(Number(b.dataset.id)));
+  $$("#view-body .del").forEach(b => b.onclick = async () => {
+    if (!confirm("删除该上游？相关密钥路由也会删除。")) return;
+    await api(`/admin/upstreams/${b.dataset.id}`, { method: "DELETE" });
+    renderUpstreams(body);
+  });
+}
+
+function rowUpstream(u) {
+  return `<tr>
+    <td><strong>${esc(u.name)}</strong></td>
+    <td><code>${esc(u.base_url)}</code></td>
+    <td>${u.priority}</td>
+    <td>${u.enabled ? '<span class="pill">启用</span>' : '<span class="pill disabled">禁用</span>'}</td>
+    <td class="row-actions">
+      <button class="btn small edit" data-id="${u.id}">编辑</button>
+      <button class="btn small danger del" data-id="${u.id}">删除</button>
+    </td></tr>`;
+}
+
+async function openUpstreamDrawer(id) {
+  const list = await api("/admin/upstreams");
+  const u = id ? list.find(x => x.id === id) : { name: "", base_url: "", priority: 100, enabled: 1 };
+  openDrawer(id ? `编辑上游 · ${u.name}` : "新增上游", `
+    <div class="form-grid">
+      <label>名称</label><input id="d-name" value="${esc(u.name)}" placeholder="如 orb">
+      <label>base_url</label><input id="d-url" value="${esc(u.base_url)}" placeholder="https://...">
+      <label>priority</label><input id="d-priority" type="number" value="${u.priority}">
+      <label>enabled</label><select id="d-enabled"><option value="1" ${u.enabled?"selected":""}>启用</option><option value="0" ${!u.enabled?"selected":""}>禁用</option></select>
+    </div>
+    <p class="hint">body_param 模式下客户端在请求体传 <code>{"shangyou":"名称"}</code> 即选此上游；key 模式下由「密钥路由」指向它。</p>
+  `, async () => {
+    const payload = { name: $("#d-name").value.trim(), base_url: $("#d-url").value.trim(), priority: parseInt($("#d-priority").value)||100, enabled: $("#d-enabled").value === "1" };
+    if (id) await api(`/admin/upstreams/${id}`, { method: "PUT", body: payload });
+    else await api("/admin/upstreams", { method: "POST", body: payload });
+    closeDrawer();
+    renderUpstreams($("#view-body"));
+  });
+}
+
+/* ---------------- 密钥路由 ---------------- */
+async function renderKeyRoutes(body) {
+  const [routes, upstreams] = await Promise.all([api("/admin/key_routes"), api("/admin/upstreams")]);
+  const upOpts = upstreams.map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join("");
+  body.innerHTML = `
+    <div class="filter-bar"><span class="hint">按下游 key 匹配上游。key_match 支持精确 / 前缀(sk-orb-*) / 正则(re:)。</span></div>
+    <table><thead><tr><th>key 匹配</th><th>上游</th><th>priority</th><th>enabled</th><th>操作</th></tr></thead>
+    <tbody>${routes.map(r=>rowKeyRoute(r)).join("") || `<tr><td colspan="5" class="empty">暂无密钥路由</td></tr>`}</tbody></table>
+    <div style="margin-top:14px" class="form-grid">
+      <label>新增路由</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input id="k-match" placeholder="sk-orb-*" style="width:200px">
+        <select id="k-up" style="min-width:140px">${upOpts}</select>
+        <input id="k-priority" type="number" value="100" style="width:90px">
+        <button class="btn primary" id="k-add">添加</button>
+      </div>
+    </div>
+  `;
+  $("#k-add").onclick = async () => {
+    const key_match = $("#k-match").value.trim();
+    const upstream_id = Number($("#k-up").value);
+    if (!key_match || !upstream_id) return;
+    await api("/admin/key_routes", { method: "POST", body: { key_match, upstream_id, priority: parseInt($("#k-priority").value)||100, enabled: true } });
+    renderKeyRoutes(body);
+  };
+  $$("#view-body .edit").forEach(b => b.onclick = () => openKeyRouteDrawer(Number(b.dataset.id), upstreams));
+  $$("#view-body .del").forEach(b => b.onclick = async () => {
+    if (!confirm("删除该密钥路由？")) return;
+    await api(`/admin/key_routes/${b.dataset.id}`, { method: "DELETE" });
+    renderKeyRoutes(body);
+  });
+}
+
+function rowKeyRoute(r) {
+  return `<tr>
+    <td><code>${esc(r.key_match)}</code></td>
+    <td>${esc(r.upstream_name || "(已删除上游)")}</td>
+    <td>${r.priority}</td>
+    <td>${r.enabled ? '<span class="pill">启用</span>' : '<span class="pill disabled">禁用</span>'}</td>
+    <td class="row-actions">
+      <button class="btn small edit" data-id="${r.id}">编辑</button>
+      <button class="btn small danger del" data-id="${r.id}">删除</button>
+    </td></tr>`;
+}
+
+function openKeyRouteDrawer(id, upstreams) {
+  const routes = [];
+  $$("#view-body tr").forEach(tr => {
+    const e = tr.querySelector(".edit");
+    if (e && Number(e.dataset.id) === id) routes.push({
+      id, key_match: tr.querySelector("code").textContent,
+      priority: tr.children[2].textContent,
+      enabled: tr.children[3].textContent.includes("启用") ? 1 : 0,
+      upstream_name: tr.children[1].textContent.trim(),
+    });
+  });
+  const r = routes[0] || { key_match: "", priority: 100, enabled: 1 };
+  const upOpts = upstreams.map(u => `<option value="${u.id}" ${u.name===r.upstream_name?"selected":""}>${esc(u.name)}</option>`).join("");
+  openDrawer("编辑密钥路由", `
+    <div class="form-grid">
+      <label>key 匹配</label><input id="d-match" value="${esc(r.key_match)}">
+      <label>上游</label><select id="d-up">${upOpts}</select>
+      <label>priority</label><input id="d-priority" type="number" value="${r.priority}">
+      <label>enabled</label><select id="d-enabled"><option value="1" ${r.enabled?"selected":""}>启用</option><option value="0" ${!r.enabled?"selected":""}>禁用</option></select>
+    </div>
+  `, async () => {
+    await api(`/admin/key_routes/${id}`, { method: "PUT", body: {
+      key_match: $("#d-match").value.trim(), upstream_id: Number($("#d-up").value),
+      priority: parseInt($("#d-priority").value)||100, enabled: $("#d-enabled").value === "1",
+    }});
+    closeDrawer();
+    renderKeyRoutes($("#view-body"));
   });
 }
 
@@ -523,8 +664,8 @@ async function renderLogs(body) {
       <button class="btn small" id="log-refresh">刷新</button>
       <button class="btn small danger" id="log-clear">清空</button>
     </div>
-    <table><thead><tr><th>时间</th><th>协议</th><th>model</th><th>路由/命中</th><th>注入</th><th>状态</th><th>耗时ms</th><th>首token</th></tr></thead>
-    <tbody>${data.items.map(l => rowLog(l)).join("") || `<tr><td colspan="8" class="empty">暂无日志</td></tr>`}</tbody></table>
+    <table><thead><tr><th>时间</th><th>协议</th><th>model</th><th>上游</th><th>路由/命中</th><th>注入</th><th>状态</th><th>耗时ms</th><th>首token</th></tr></thead>
+    <tbody>${data.items.map(l => rowLog(l)).join("") || `<tr><td colspan="9" class="empty">暂无日志</td></tr>`}</tbody></table>
     <div class="pager">
       <button class="btn small" id="log-prev" ${page<=1?"disabled":""}>上一页</button>
       <span class="hint">第 ${page} 页 / 共 ${Math.max(1, Math.ceil(data.total/data.page_size))} 页（${data.total} 条）</span>
@@ -547,6 +688,7 @@ function rowLog(l, idx) {
     <td>${new Date(l.ts*1000).toLocaleString()}</td>
     <td>${esc(l.protocol)}</td>
     <td>${esc(l.model || "-")}</td>
+    <td>${esc(l.upstream || "默认")}<span class="hint">${l.upstream_source ? " / " + esc(l.upstream_source) : ""}</span></td>
     <td>${hit}</td>
     <td>${inject}</td>
     <td>${l.status}</td>
@@ -564,6 +706,7 @@ function showLogDetail(l) {
       <label>family/category</label><div>${esc(l.family || "-")} / ${esc(l.category || "-")}</div>
       <label>路由模式</label><div>${l.route_mode === "pack" ? "破甲词包" : "精细路由"}</div>
       <label>命中包</label><div>${esc(l.packs || "-")}</div>
+      <label>上游</label><div>${esc(l.upstream || "默认")}（${esc(l.upstream_source || "-")}）</div>
       <label>位置</label><div>${esc(l.position)}</div>
       <label>状态</label><div>${l.status}</div>
       <label>路径</label><div>${esc(l.request_path)}</div>
