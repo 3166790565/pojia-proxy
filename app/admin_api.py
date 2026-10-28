@@ -58,7 +58,7 @@ async def me(_: None = Depends(require_admin)):
 
 @router.get("/health")
 async def health():
-    return {"ok": True, "ts": int(time.time())}
+    return {"ok": True, "ts": int(time.time()), "version": config.APP_VERSION}
 
 
 # ---------------- 设置 ----------------

@@ -154,12 +154,14 @@ tests/            pytest
 ## 镜像
 
 - `bxacc123/pojia-router:latest`
-- `bxacc123/pojia-router:1.0.0`
+- `bxacc123/pojia-router:1.1.0`
+
+版本号在根目录 `VERSION` 文件（`/admin/health` 会返回 `version`）。
 
 本地修改源码后重新发布：
 
 ```bash
-docker build -t bxacc123/pojia-router:latest -t bxacc123/pojia-router:1.0.0 .
+docker build -t bxacc123/pojia-router:latest -t bxacc123/pojia-router:1.1.0 .
 docker push bxacc123/pojia-router:latest
-docker push bxacc123/pojia-router:1.0.0
+docker push bxacc123/pojia-router:1.1.0
 ```

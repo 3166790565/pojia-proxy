@@ -12,6 +12,24 @@ PRESET_DIR = Path(os.environ.get("PRESET_DIR", str(DATA_DIR / "presets"))).resol
 SEED_DIR = Path(os.environ.get("SEED_DIR", str(Path(__file__).resolve().parent.parent / "presets" / "seed"))).resolve()
 WEB_DIR = Path(os.environ.get("WEB_DIR", str(Path(__file__).resolve().parent.parent / "web"))).resolve()
 
+
+def _read_version() -> str:
+    """读取项目根目录 VERSION 文件；缺失时回退。"""
+    for candidate in (
+        Path(__file__).resolve().parent.parent / "VERSION",
+        Path("/app/VERSION"),
+    ):
+        try:
+            value = candidate.read_text(encoding="utf-8").strip()
+            if value:
+                return value
+        except OSError:
+            continue
+    return "0.0.0"
+
+
+APP_VERSION = os.environ.get("APP_VERSION", "").strip() or _read_version()
+
 # 会话签名密钥：未提供则首次启动生成并持久化
 SECRET_KEY = os.environ.get("SECRET_KEY", "").strip()
 SECRET_KEY_FILE = DATA_DIR / ".secret_key"
